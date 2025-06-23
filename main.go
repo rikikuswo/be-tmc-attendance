@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -20,9 +21,12 @@ func main() {
 	database.ConnectDB()
 
 	// Auto migrate
-	database.DB.AutoMigrate(&models.TMCAttendance{})
+	database.DB.AutoMigrate(&models.TMCAttendance{}, &models.TMCStatus{}, &models.TMCCompany{})
 
 	r := mux.NewRouter()
+
+	r.HandleFunc("/api/get-companies", getCompanies).Methods("GET")
+	r.HandleFunc("/api/get-statuses", getStatuses).Methods("GET")
 
 	r.HandleFunc("/api/form", submitForm).Methods("POST")
 	r.HandleFunc("/api/form/{id}", getFormByID).Methods("GET")
@@ -47,6 +51,43 @@ func encryptID(id uint) string {
 	return hash
 }
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+func generateUniqueNumericID() (string, error) {
+	for {
+		// Generate angka random 5 digit (range: 10000 - 99999)
+		newID := fmt.Sprintf("%05d", rand.Intn(90000)+10000)
+
+		var existing models.TMCAttendance
+		result := database.DB.Where("unique_id = ?", newID).First(&existing)
+
+		if result.RowsAffected == 0 {
+			return newID, nil // ID unik ditemukan
+		}
+
+		// Optional: Logging jika terjadi duplikasi
+		fmt.Println("Duplicate ID found, regenerating...")
+	}
+}
+
+func getCompanies(w http.ResponseWriter, r *http.Request) {
+	var companies []models.TMCCompany
+	database.DB.Find(&companies)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(companies)
+}
+
+func getStatuses(w http.ResponseWriter, r *http.Request) {
+	var statuses []models.TMCStatus
+	database.DB.Find(&statuses)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statuses)
+}
+
 // Handler untuk menerima form
 func submitForm(w http.ResponseWriter, r *http.Request) {
 	var form models.TMCAttendance
@@ -68,42 +109,38 @@ func submitForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// allowedStatus := map[string]bool{
-	// 	"Observer":    true,
-	// 	"Participant": true,
-	// 	"Speaker":     true,
-	// }
-
-	// if _, ok := allowedStatus[form.Status]; !ok {
-	// 	http.Error(w, "Status tidak valid", http.StatusBadRequest)
-	// 	return
-	// }
-
 	// ✅ Cek Data Duplikat
 	var existing models.TMCAttendance
 	result := database.DB.Where("name = ? AND company = ? AND status = ?", form.Name, form.Company, form.Status).First(&existing)
 
 	if result.RowsAffected > 0 {
-		http.Error(w, "Data sudah pernah diinput.", http.StatusBadRequest)
+		http.Error(w, "Already exists.", http.StatusBadRequest)
 		return
 	}
+
+	// ✅ Generate Unique Numeric ID (SEBELUM SAVE)
+	uniqueID, err := generateUniqueNumericID()
+	if err != nil {
+		http.Error(w, "Failed to generate unique ID", http.StatusInternalServerError)
+		return
+	}
+	form.UniqueID = uniqueID
 
 	// ✅ Simpan Data Jika Belum Ada
 	createResult := database.DB.Create(&form)
 	if createResult.Error != nil {
-		http.Error(w, "Gagal menyimpan data", http.StatusInternalServerError)
+		http.Error(w, "Failed to save data", http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("Data disimpan: %+v\n", form)
+	fmt.Printf("Data Saved: %+v\n", form)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"message": "Data berhasil disimpan!",
-		"id": encryptID(form.ID),
+		"message": "Successfully submitted!",
+		"id":      encryptID(form.ID),
 	})
 }
-
 
 func getFormByID(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
@@ -128,7 +165,7 @@ func getFormByID(w http.ResponseWriter, r *http.Request) {
 	result := database.DB.First(&form, realID)
 
 	if result.Error != nil {
-		http.Error(w, "Data tidak ditemukan", http.StatusNotFound)
+		http.Error(w, "Data not found", http.StatusNotFound)
 		return
 	}
 
@@ -145,22 +182,22 @@ func getAttendees(w http.ResponseWriter, r *http.Request) {
 }
 
 func attendHandler(w http.ResponseWriter, r *http.Request) {
-    // Ambil ID dari parameter URL
+    // Ambil unique_id dari parameter URL
     params := mux.Vars(r)
-    id := params["id"]
+    uniqueID := params["id"]
 
     var attendance models.TMCAttendance
 
-    // Cari data peserta berdasarkan ID
-    result := database.DB.First(&attendance, id)
+    // Cari data peserta berdasarkan unique_id
+    result := database.DB.Where("unique_id = ?", uniqueID).First(&attendance)
     if result.Error != nil {
-        http.Error(w, "Data tidak ditemukan", http.StatusNotFound)
+        http.Error(w, "Data not found", http.StatusNotFound)
         return
     }
 
     // Validasi apakah peserta sudah hadir
     if attendance.AttendedAt.Valid {
-        http.Error(w, "Peserta sudah hadir", http.StatusBadRequest)
+        http.Error(w, "Already attended", http.StatusBadRequest)
         return
     }
 
@@ -173,14 +210,14 @@ func attendHandler(w http.ResponseWriter, r *http.Request) {
     // Simpan perubahan
     saveResult := database.DB.Save(&attendance)
     if saveResult.Error != nil {
-        http.Error(w, "Gagal mencatat kehadiran", http.StatusInternalServerError)
+        http.Error(w, "Failed to save attendance", http.StatusInternalServerError)
         return
     }
 
     // Berikan respon sukses
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]interface{}{
-        "message": "Kehadiran berhasil dicatat",
+        "message": "Attendance saved successfully",
         "data":    attendance,
     })
 }
@@ -191,14 +228,14 @@ func allAttendeesHandler(w http.ResponseWriter, r *http.Request) {
     // Ambil semua data peserta
     result := database.DB.Order("created_at desc").Find(&attendees)
     if result.Error != nil {
-        http.Error(w, "Gagal mengambil data peserta", http.StatusInternalServerError)
+        http.Error(w, "Failed to fetch attendees", http.StatusInternalServerError)
         return
     }
 
     // Berikan respon sukses
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(map[string]interface{}{
-        "message":   "Data peserta berhasil diambil",
+        "message":   "Attendees fetched successfully",
         "attendees": attendees,
     })
 }

@@ -7,6 +7,7 @@ import (
 
 type TMCAttendance struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
+	UniqueID  string    `gorm:"uniqueIndex"`
 	Name      string    `gorm:"size:100" json:"name"`
 	Company   string    `gorm:"size:100" json:"company"`
 	Status    string    `gorm:"size:50" json:"status"`

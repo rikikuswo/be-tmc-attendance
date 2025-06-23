@@ -13,7 +13,7 @@ var DB *gorm.DB
 
 func ConnectDB() {
 	// Ganti dengan konfigurasi database kamu
-	dsn := "host=127.0.0.1 user=postgres password=admin12345 dbname=postgres port=5432 sslmode=disable"
+	dsn := "host=127.0.0.1 user=postgres password=12345 dbname=postgres port=5432 sslmode=disable"
 	database, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 
 	if err != nil {
